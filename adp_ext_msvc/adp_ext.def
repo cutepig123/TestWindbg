@@ -1,0 +1,28 @@
+;--------------------------------------------------------------------
+;
+; Copyright (C) Microsoft Corporation, 2000-2001.
+;
+;--------------------------------------------------------------------
+
+EXPORTS
+    AdpEventControlC
+    AdpEventException
+    AdpEventExitProcess
+    DebugExtensionNotify
+     DebugExtensionInitialize
+     DebugExtensionUninitialize
+     KnownStructOutput
+     _EFN_Analyze
+
+	hellodml
+	echoasdml
+	JSHE_SymTest
+	JSHE_kb
+	JSHE_x
+	JSHE_limp
+	
+	cmdsample
+    structsample
+    symgrptest
+
+     
