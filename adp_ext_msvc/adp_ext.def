@@ -16,11 +16,16 @@ EXPORTS
 
 	hellodml
 	echoasdml
+
+	; check compatability
 	JSHE_SymTest
 	JSHE_kb
-	JSHE_x
-	JSHE_limp
+	JSHE_dt
 	
+	; list import table
+	JSHE_limp
+	JSHE_lexpport
+
 	cmdsample
     structsample
     symgrptest

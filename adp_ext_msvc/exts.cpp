@@ -75,6 +75,7 @@ cmdsample(PDEBUG_CLIENT Client, PCSTR args)
     ULONG_PTR ExceptionInformation[EXCEPTION_MAXIMUM_PARAMETERS];
     } EXCEPTION_RECORD;
 */
+
 HRESULT CALLBACK
 structsample(PDEBUG_CLIENT Client, PCSTR args)
 {

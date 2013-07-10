@@ -7,11 +7,12 @@
 //----------------------------------------------------------------------------
 
 #include "dbgexts.h"
+#include <cvconst.h>
+#include <Dbghelp.h>
+
 #include <map>
 #include <string>
 #include <vector>
-#include <cvconst.h>
-#include <Dbghelp.h>
 #include <algorithm>
 
 #define STATUS_CPP_EH_EXCEPTION 0xe06d7363
@@ -20,12 +21,22 @@
 #define MAX_MACHINE 64
 #define MAX_COMMENT 256
 
-void ExtClearString();
+#define	MY_ERR_STS_NO_TYPE_INFO		-3
+#define	MY_ERR_STS_NO_BRACKET		-10
 
+#define	GOTO_EXIT	goto Exit;
+#define CHK_STS	if( S_OK!=Status) {_ASSERT(0); goto Exit;}
+//#define	CHK_UPDATE_STS(str)	if(Status<0) {strcpy(sSts,str); goto Exit;}
+#define	CHK_UPDATE_STS(str)	if(Status<0) {goto Exit;}
+#define MAX_STACK_FRAMES 20
+
+
+void ExtClearString();
 std::string &ExtGetString();
 
 char g_BaseDir[MAX_PATH - 1];
 char g_Machine[MAX_MACHINE];
+BOOL g_bChkTemplate =0;
 
 struct PARAM
 {
@@ -531,7 +542,173 @@ echoasdml(PDEBUG_CLIENT pDebugClient, PCSTR args)
     return S_OK;
 }
 
-#define CHK_STS	if( S_OK!=Status) {_ASSERT(0); goto Exit;}
+#define	READ_VIRTUAL(addr, x)											\
+	Status =g_ExtData->ReadVirtual(addr, &x, sizeof(x), &BytesRead );	\
+	CHK_STS;															\
+	_ASSERT(BytesRead==sizeof(x));
+
+HRESULT GetExportData( ULONG64 hMod, std::map<DWORD, std::string> *pmExport )	// Ordinal -> Name
+{
+	//IMAGE_DOS_HEADER* IDH = (IMAGE_DOS_HEADER*)hMod;
+	HRESULT Status =0;
+
+	IMAGE_DOS_HEADER stDH;
+	ULONG BytesRead=0;
+	Status =g_ExtData->ReadVirtual(hMod, &stDH, sizeof(stDH), &BytesRead );
+	CHK_STS;
+	_ASSERT(BytesRead==sizeof(stDH));
+
+	//IMAGE_OPTIONAL_HEADER* IOH = (IMAGE_OPTIONAL_HEADER*)((BYTE*)hMod + IDH->e_lfanew + 24);
+	IMAGE_OPTIONAL_HEADER stIOH;
+	Status =g_ExtData->ReadVirtual(hMod+ stDH.e_lfanew + 24, &stIOH, sizeof(stIOH), &BytesRead );
+	CHK_STS;
+	_ASSERT(BytesRead==sizeof(stIOH));
+
+	//_IMAGE_EXPORT_DIRECTORY* pExportDescriptor = 
+	//	(_IMAGE_EXPORT_DIRECTORY*)((BYTE*)hMod + IOH->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
+	_IMAGE_EXPORT_DIRECTORY stExportDescriptor;
+	Status =g_ExtData->ReadVirtual(hMod+ stIOH.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress, &stExportDescriptor, sizeof(stExportDescriptor), &BytesRead );
+	CHK_STS;
+	_ASSERT(BytesRead==sizeof(stExportDescriptor));
+
+	for(DWORD i=0; i<stExportDescriptor.NumberOfNames; i++)
+	{
+		DWORD AddrFtn;
+		READ_VIRTUAL( (hMod + stExportDescriptor.AddressOfNames+ 4*i), AddrFtn );
+
+		char ftnName[MAX_PATH];
+		READ_VIRTUAL( (hMod + AddrFtn), ftnName );
+
+		//ULONG ulAddrOrdinal;
+		//READ_VIRTUAL( (hMod + stExportDescriptor.AddressOfNameOrdinals+ 2*i), ulAddrOrdinal );
+
+		WORD Ordinal;
+		READ_VIRTUAL( (hMod + stExportDescriptor.AddressOfNameOrdinals+ 2*i), Ordinal );
+		Ordinal += stExportDescriptor.Base;
+
+		ExtOut("Export Ftn %s Ordinal %d\n", ftnName, Ordinal);
+		if(pmExport)
+			(*pmExport)[Ordinal] =ftnName;
+	}
+
+	//int  nSize = stExportDescriptor.Name;
+	//BYTE* pName = 0;
+	//CString csName;
+	//LPSTR name = 0;
+	//int nData = 0;
+	//bool bIntial = true;
+	//CString csType;
+	//unsigned long ulbase = pExportDescriptor->Base - 1;
+	//DWORD dwData = pExportDescriptor->AddressOfFunctions;
+	//SINGLE_FUNCT_ENTRY SingleEntry;
+	//int nHint = -2;
+	//while( nData <= pExportDescriptor->NumberOfFunctions )
+	//{ 
+	//	DWORD dwData =  pExportDescriptor->AddressOfNameOrdinals;
+	//	if( 0 == pExportDescriptor->NumberOfNames )
+	//	{
+	//		if(bIntial)
+	//		{
+	//			bIntial = false;
+	//		}
+	//		else
+	//		{
+	//			CString csOrdinal;
+	//			csOrdinal.Format( "%d(0X%x)",ulbase, ulbase );
+	//			csOrdinal.MakeUpper();
+	//			csOrdinal.Replace( 'X','x');
+	//			SingleEntry.csFunction = "N/A";
+	//			SingleEntry.csHint = "N/A";
+	//			SingleEntry.csOrdinal.Format( "%s", csOrdinal );
+	//			SingleEntry.csIndex.Format( "%d", nData );
+	//			ExportEntriesArr.Add( SingleEntry );
+	//		}
+	//		ulbase++;
+	//	}
+	//	else
+	//	{
+	//		if( pExportDescriptor->NumberOfNames >= nData )
+	//		{
+	//			if( FALSE == IsBadReadPtr((BYTE*)hMod +  pExportDescriptor->Name,1))
+	//			{ 
+	//				pName = (BYTE*)hMod + nSize;
+	//				name = reinterpret_cast<LPSTR>(pName);
+	//			}
+	//		}
+	//		else
+	//		{
+	//			name = "";
+	//		}
+	//		csName = name;
+	//		if( FALSE != csName.IsEmpty())
+	//		{
+	//			SingleEntry.csFunction = "N/A";
+	//			SingleEntry.csEntryPoint = "";
+	//			
+	//		}
+	//		else
+	//		{
+	//			DWORD dwData = (DWORD)GetProcAddress( hMod,  csName  );
+	//			DWORD dwDiff = dwData - (DWORD)hMod;
+	//			SingleEntry.csEntryPoint.Format("0x%x",dwDiff );
+	//			SingleEntry.csEntryPoint.MakeUpper();
+	//			SingleEntry.csEntryPoint.Replace( 'X','x');
+	//			SingleEntry.csFunction.Format( "%s", csName );
+	//			int nSerach = 0;
+	//			m_MapExport.SetAt( csName, nSerach );
+	//			nHint++;
+	//		}
+	//		int nNextValue = csName.GetLength() + 1;
+	//		nSize = nSize  + nNextValue;
+	//		if(bIntial)
+	//		{
+	//			bIntial = false;
+	//		}
+	//		else
+	//		{
+	//			if( FALSE != csName.IsEmpty())
+	//			{
+	//				SingleEntry.csHint = L"N/A";
+	//				
+	//			}
+	//			else
+	//			{
+	//				SingleEntry.csHint.Format( "%d(0x0%x)",nHint,nHint);
+	//				SingleEntry.csHint.MakeUpper();
+	//				SingleEntry.csHint.Replace( "X", "x" );	
+	//			}
+	//			
+	//			//****Code is not completed due to unavailability of Information.
+	//			SingleEntry.csOrdinal.Format( "%d(0x0%x)",ulbase,ulbase);
+	//			SingleEntry.csOrdinal.MakeUpper();
+	//			SingleEntry.csOrdinal.Replace( "X", "x" );
+	//			SingleEntry.csIndex.Format( "%d", nData );
+	//			ExportEntriesArr.Add( SingleEntry );
+	//			
+	//		}
+	//	}
+	//	 ulbase++;
+	//	dwData+=4;
+	//	nData++;
+	//}
+	//FreeLibrary(hMod);
+Exit:
+	return Status;
+}
+
+HRESULT
+JSHE_lexpport(PDEBUG_CLIENT Client, PCSTR Args)
+{
+	ULONG64 Mod =atol(Args);
+
+	INIT_API();
+	
+	Status =GetExportData( Mod, NULL );
+	CHK_STS;
+Exit:
+	EXIT_API();
+	return Status;
+}
 
 static HRESULT ChkModule(std::vector<std::string> const &aModuleNameWithPdb, int ModuleIndex)
 {
@@ -587,7 +764,7 @@ struct	StringOutputRow
 	}
 	void NewRow()
 	{
-		for( auto it=mRowData.begin(),end=mRowData.end(); it!=end; ++it)
+		for( std::map<std::string, std::string>::iterator it=mRowData.begin(),end=mRowData.end(); it!=end; ++it)
 			it->second.clear();
 		rowID++;
 	}
@@ -609,14 +786,14 @@ struct	StringOutputRow
 
 		if(rowID==0)
 		{
-			for( auto it=mRowData.begin(),end=mRowData.end(); it!=end; ++it)
+			for( std::map<std::string, std::string>::iterator it=mRowData.begin(),end=mRowData.end(); it!=end; ++it)
 			{
 				ExtOut("%s\t",it->first.c_str());
 			}
 			ExtOut("\n");
 		}
 
-		for( auto it=mRowData.begin(),end=mRowData.end(); it!=end; ++it)
+		for( std::map<std::string, std::string>::iterator it=mRowData.begin(),end=mRowData.end(); it!=end; ++it)
 		{
 			ExtOut("%s\t",it->second.c_str());
 		}
@@ -630,11 +807,45 @@ struct	StringOutputRow
 struct ImportFunc
 {
 IMAGE_IMPORT_BY_NAME data;
-char dummy[MAX_PATH];	
+char dummy[1000];	
 };
 
+struct ModuleInfo
+{
+	std::string name;
+	ULONG64 base;
+};
+
+
+
+std::string& remove_ext(std::string const &ModuleName, std::string& noExt)
+{
+	size_t p =ModuleName.rfind('.');
+	if(p!=ModuleName.npos) 
+		noExt =ModuleName.substr(0, p);
+	else
+		noExt =ModuleName;
+
+	return noExt;
+}
+
+ULONG64 GetModuleBase(std::vector<ModuleInfo> const &aModuleWithPdb, const char *dllName)
+{
+	std::string noExt;
+	remove_ext( dllName, noExt);
+
+	for( std::vector<ModuleInfo>::const_iterator it=aModuleWithPdb.begin(), end=aModuleWithPdb.end();
+		it!=end; ++it)
+	{
+		if( stricmp( it->name.c_str(), noExt.c_str() ) ==0 )
+			return it->base;
+	}
+
+	return 0;
+}
+
 template <class PRE_CONDITION, class MYCALLBACK>
-HRESULT GetImportData( ULONG64 hMod, PRE_CONDITION *precon, MYCALLBACK *callback )
+HRESULT GetImportData( ULONG64 hMod, PRE_CONDITION *precon, MYCALLBACK *callback, std::vector<ModuleInfo> *paModuleWithPdb )
 {
 	HRESULT Status =0;
 
@@ -653,6 +864,8 @@ HRESULT GetImportData( ULONG64 hMod, PRE_CONDITION *precon, MYCALLBACK *callback
 
 	for( int nDllId=0; ;nDllId++)
 	{
+		std::map<DWORD, std::string> mExport;
+
 		ULONG64 IID_Addr =hMod + stOH.DataDirectory[ IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress + nDllId*sizeof(stIID);
 		Status =g_ExtData->ReadVirtual(IID_Addr, &stIID, sizeof(stIID), &BytesRead );
 		CHK_STS;
@@ -664,12 +877,22 @@ HRESULT GetImportData( ULONG64 hMod, PRE_CONDITION *precon, MYCALLBACK *callback
 		Status =g_ExtData->ReadVirtual( hMod+stIID.Name, DllName, sizeof(DllName), &BytesRead );
 		CHK_STS;
 
-		//ExtOut("Dll: %s\n", DllName);
-
+		ExtOut("Import from Dll: %s\n", DllName);
+		
 		if(precon) 
 		{
 			if( !(*precon)(DllName) )
 				continue;
+
+			_ASSERT( paModuleWithPdb );
+
+			if(paModuleWithPdb)
+			{
+				ULONG64 hBase =GetModuleBase( *paModuleWithPdb, DllName );
+				_ASSERT(hBase);
+				Status =GetExportData( hBase, &mExport );
+				CHK_STS;
+			}
 		}
 
 		IMAGE_THUNK_DATA stITD;
@@ -682,26 +905,36 @@ HRESULT GetImportData( ULONG64 hMod, PRE_CONDITION *precon, MYCALLBACK *callback
 			if(!stITD.u1.Function)	break;
 		
 			ImportFunc stImport;
-			char UnDecoratedName[MAX_PATH];
+			char UnDecoratedName[1000];
 			memset( &stImport, 0, sizeof(stImport));
 
 			Status =g_ExtData->ReadVirtual( hMod + stITD.u1.AddressOfData, &stImport, sizeof(stImport), &BytesRead );
 			if( Status==S_OK)
 			{
-				DWORD ret =UnDecorateSymbolName( (char*)stImport.data.Name,UnDecoratedName,MAX_PATH, 0);
+				DWORD ret =UnDecorateSymbolName( (char*)stImport.data.Name,UnDecoratedName,1000, 0);
 				if(ret==0)
 				{
 					Status =-1;
 					CHK_STS;
 				}
 
-				//ExtOut("Function: [%d] %d %s %s\n", nFuncId, stImport.data.Hint, stImport.data.Name, UnDecoratedName);
+				ExtOut("Import Function: [%d] %d %s %s\n", nFuncId, stImport.data.Hint, stImport.data.Name, UnDecoratedName);
 
 				if(callback)
 					(*callback)(DllName, UnDecoratedName);
 			}
-			//else
-				//ExtOut("Function: [%d] %x\n", nFuncId, stITD.u1.Ordinal & 0xffffffff);
+			else
+			{
+				DWORD Ordinal =stITD.u1.Ordinal & 0xffff;
+				std::map<DWORD, std::string>::iterator it= mExport.find( Ordinal );
+				_ASSERT(it!=mExport.end());
+
+				if(it!=mExport.end())
+				{
+					ExtOut("Import Function: [%d] %x %s\n", nFuncId, Ordinal, it->second.c_str());
+					(*callback)(DllName, it->second.c_str());
+				}
+			}
 		}
 	
 	}
@@ -746,34 +979,18 @@ JSHE_limp(PDEBUG_CLIENT Client, PCSTR Args)
 	INIT_API();
 	
 	MyDumpFtn dmp;
-	Status =GetImportData( Mod,(PRECON)0,&dmp );
+	Status =GetImportData( Mod,(PRECON)0,&dmp, 0 );
 	CHK_STS;
 Exit:
 	EXIT_API();
 	return Status;
 }
 
-struct ModuleInfo
-{
-	std::string name;
-	ULONG64 base;
-};
 
-std::string& remove_ext(std::string const &ModuleName, std::string& noExt)
-{
-	size_t p =ModuleName.rfind('.');
-	if(p!=ModuleName.npos) 
-		noExt =ModuleName.substr(0, p);
-	else
-		noExt =ModuleName;
-
-	return noExt;
-}
 
 struct MyPrecon
 {
 	const std::vector<ModuleInfo> *pModuleWithPdb;
-
 
 	bool operator()(const char*ModuleName)
 	{
@@ -785,7 +1002,7 @@ struct MyPrecon
 
 		for(size_t i=0; i<pModuleWithPdb->size(); i++)
 		{
-			if( 0==stricmp( pModuleWithPdb->at(i).name.c_str(), ModuleNameNoExt.c_str()) )
+			if( 0==_stricmp( pModuleWithPdb->at(i).name.c_str(), ModuleNameNoExt.c_str()) )
 			{
 				isin =true;
 				break;
@@ -808,12 +1025,12 @@ void myReplace(std::string& str, const std::string& oldStr, const std::string& n
 
 inline std::string trim(std::string& str)
 {
-str.erase(0, str.find_first_not_of(' '));       //prefixing spaces
-str.erase(str.find_last_not_of(' ')+1);         //surfixing spaces
+str.erase(0, str.find_first_not_of(" \t\r\n"));       //prefixing spaces
+str.erase(str.find_last_not_of(" \t\r\n")+1);         //surfixing spaces
 return str;
 }
 
-HRESULT ReadTextFile(const char *f, int excludeNumLine, std::string &text)
+HRESULT ReadTextFile(const char *f, int excludeNumLine, std::vector<std::string> &text)
 {
 	//HRESULT Status =0;
 	FILE *fp =fopen(f,"r");
@@ -826,7 +1043,7 @@ HRESULT ReadTextFile(const char *f, int excludeNumLine, std::string &text)
 	for( ; fgets(line,1000, fp); lineNum++)
 	{
 		if( lineNum<excludeNumLine ) continue;
-		text += line;
+		text.push_back( line);
 	}
 
 	fclose(fp);
@@ -834,11 +1051,19 @@ HRESULT ReadTextFile(const char *f, int excludeNumLine, std::string &text)
 	return 0;
 }
 
+HRESULT SkipXXEqual(std::string &s)
+{
+	size_t p =s.find_first_of(" \t");
+	_ASSERT( p!=s.npos );
+	s = s.substr(p);
+	return 0;
+}
+
 BOOL CompareFile(const char *f1, const char*f2, const char *moduleName1, const char *moduleName2)
 {
 	HRESULT Status =0;
-	std::string text1;
-	std::string text2;
+	std::vector<std::string> text1;
+	std::vector<std::string> text2;
 
 	Status =ReadTextFile(f1, 0, text1);
 	CHK_STS;
@@ -846,23 +1071,117 @@ BOOL CompareFile(const char *f1, const char*f2, const char *moduleName1, const c
 	Status =ReadTextFile(f2, 0, text2);
 	CHK_STS;
 
-	char moduleName[MAX_PATH];
-	sprintf( moduleName, "%s!", moduleName1 );
-	myReplace(text1, moduleName, "TMP!" );
+	if(text1.size()!=text2.size())
+	{
+		Status =-2;
+		goto Exit;
+	}
 
-	sprintf( moduleName, "%s!", moduleName2 );
-	myReplace(text2, moduleName, "TMP!" );
+	for( size_t i=0, n=text1.size(); i<n; i++)
+	{
+		char moduleName[MAX_PATH];
+		sprintf( moduleName, "%s!", moduleName1 );
+		myReplace(text1[i], moduleName, "TMP!" );
 
-	Status = (text1==text2) ? S_OK : -1;
+		sprintf( moduleName, "%s!", moduleName2 );
+		myReplace(text2[i], moduleName, "TMP!" );
+
+		if(text1[i].size()>0 && text2[i].size()>0 && text1[i][0]=='=')
+		{
+			_ASSERT( text2[i][0]=='=' );
+			SkipXXEqual(text1[i]);
+			SkipXXEqual(text2[i]);
+		}
+
+		if(	text1[i]!=text2[i])
+		{
+			ExtOut("Line %d\n", i);
+			ExtOut("S1 %s\n", text1[i].c_str());
+			ExtOut("S2 %s\n", text2[i].c_str());
+			Status =-2;
+			CHK_STS;
+		}
+		Status = (text1==text2) ? S_OK : -1;
+	}
+	
 Exit:
 	return Status==S_OK ? TRUE : FALSE;
 }
 
+
+
 struct MyChkImplCompatability
 {
 	const char *ModuleSrc;
+	std::vector<std::string> vComparedTypes;
 
-	// Example: public: static void __cdecl PdbParser::IPdbParserFactory::Destroy(void)
+	// input: lstrcmpiWThunk
+	/**** WARNING: Unable to verify checksum for testMFC.exe
+				004135a0 testMFC!ATL::lstrcmpiWThunk (wchar_t *, wchar_t *)
+				00413620 testMFC!ATL::lstrcmpiWFake (wchar_t *, wchar_t *)*/
+	HRESULT GetFunctionProrotype(const char *module, std::string const &ftnNoArgs, std::string &ftnWithArgs)
+	{
+		char cmd[1000];
+		_snprintf(cmd, 1000, ".logopen tmp.txt; x %s!%s; .logclose", module, ftnNoArgs.c_str() );
+		_ASSERT(strlen(cmd)<1000-1);
+		ExtExec(cmd);
+
+		FILE *fp =fopen("tmp.txt", "r");
+		char line[1000];
+		int isFind =0;
+		for(int nLine=0; fgets(line, 1000, fp); nLine++)
+		{
+			//ignore 1st line	//log file
+			if( nLine==0) {
+				_ASSERT( strstr(line,"log file")>0);
+				continue;
+			}
+			if(line[0]=='*') continue;
+
+			if( isdigit(line[0]) ){
+			
+				std::string sline(line);
+				size_t p1 =sline.find_first_of(" \t");
+				_ASSERT(p1 != std::string::npos );
+
+				ftnWithArgs =sline.substr(p1);
+			}
+			else
+			{
+				ftnWithArgs =line;
+			}
+
+			trim(ftnWithArgs);
+
+			isFind =1;
+
+			/*size_t p2 =sline.find_last_not_of(" \t", p1);
+			_ASSERT(p2 != std::string::npos );
+
+			
+			ftnWithArgs =sline.substr(p2);*/
+			break;
+		}
+		
+		fclose(fp);
+
+		if(!isFind)
+		{
+			_ASSERT(0);
+			return -2;
+		}
+		
+		ExtOut("after GetFunctionProrotype: %s\n",ftnWithArgs.c_str());
+		if( ftnWithArgs.find("= <no type information>")!=ftnWithArgs.npos)
+			return MY_ERR_STS_NO_TYPE_INFO;
+
+		return 0;
+	}
+
+	// Example: 
+	// 1 : public: static void __cdecl PdbParser::IPdbParserFactory::Destroy(void)
+	// 2:
+	
 	HRESULT SplitFunction(std::string const &ftn, std::string *name, std::vector<std::string> *args, std::string *ret)
 	{
 		HRESULT Status =S_OK;
@@ -870,7 +1189,7 @@ struct MyChkImplCompatability
 		size_t p1 =ftn.find_last_of(')');
 		if(p1==std::string::npos)
 		{
-			Status =-1; CHK_STS;
+			Status =MY_ERR_STS_NO_BRACKET; GOTO_EXIT;
 		}
 
 		size_t p2 =ftn.find_last_of('(');
@@ -902,16 +1221,29 @@ Exit:
 		myReplace( d, "const", "");
 		myReplace( d, "struct", "");
 		myReplace( d, "class", "");
-		myReplace( d, "*", "");
+		myReplace( d, "*", ""); 
+		myReplace( d, "enum", "");
+		myReplace( d, "unsigned", "");
 		trim(d);
-		_ASSERT(d.find(' ')==d.npos);
+		//_ASSERT(d.find(' ')==d.npos);	// todo: the function has bug
 	}
+
+void LogData(const char *fmt, ...)
+{
+	va_list vl;
+	va_start(vl, fmt);
+	FILE *fp =fopen("SimpleLog.txt","a");
+	vfprintf(fp, fmt, vl);
+	fclose(fp);
+	va_end(vl);
+}
 
 	HRESULT operator()(const char*ModuleDes, const char* ftn)
 	{
 		HRESULT Status =S_OK;
-		static std::vector<std::string> vComparedTypes;
+		
 
+		//char sSts[MAX_PATH]={0};
 		std::string ModuleDesNoExt;
 		remove_ext( ModuleDes, ModuleDesNoExt );
 		ExtOut("------------\nChk %s\t%s\t%s\n", ModuleSrc, ModuleDesNoExt.c_str(), ftn);
@@ -921,7 +1253,16 @@ Exit:
 		std::vector<std::string> args;
 		std::string ret;
 		Status =SplitFunction( ftn, &name, &args, &ret );
-		CHK_STS;
+		if( Status==MY_ERR_STS_NO_BRACKET )
+		{
+			std::string ftn2;
+			Status =GetFunctionProrotype( ModuleDesNoExt.c_str(), ftn, ftn2 );
+			//CHK_STS;	//some function may still fails due to no export can found
+			CHK_UPDATE_STS("GetFunctionProrotype Fails");
+
+			Status =SplitFunction( ftn2, &name, &args, &ret );
+		}
+		CHK_UPDATE_STS("SplitFunction Fails");
 
 		ExtOut("-->name %s\n", name.c_str());
 		ExtOut("-->args\n");
@@ -935,14 +1276,25 @@ Exit:
 		// chking each args
 		for( size_t i=0, n=args.size(); i<n; i++)
 		{
+			std::string key;
 			ExtOut("-->Checking type %s:\n", args[i].c_str());
+			const char *sChkSts ="NA";
 
-			std::string key =args[i];
-			key +="!";
-			key +=ModuleSrc;
-			key +="+";
-			key +=ModuleDesNoExt;
+			if( !g_bChkTemplate )
+			{
+				if( args[i].find("<")!=std::string::npos )
+				{
+					sChkSts ="**Contains template, ignore!";
+					goto ExitFor;
+				}
+			}
 
+			
+			key += args[i];
+			key += "!";
+			key += ModuleSrc;
+			key += "+";
+			key += ModuleDesNoExt;
 			if( std::find( vComparedTypes.begin(), vComparedTypes.end(), key ) == vComparedTypes.end() )
 			{
 				char cmd[MAX_PATH];
@@ -964,22 +1316,36 @@ Exit:
 				_ASSERT(isOk);
 
 				isOk =CompareFile("log1.txt", "log2.txt", ModuleSrc, ModuleDesNoExt.c_str());
-				_ASSERT(isOk);
-				ExtOut("***%s***\n", isOk?"OK":"Fail");
+				
+				sChkSts =isOk?"OK":"Fail";
 
-				vComparedTypes.push_back( key );
+				vComparedTypes.push_back(key);
 			}
 			else
 			{
-				ExtOut("***%s***\n", "Ignored");
+				sChkSts ="Ignored";
 			}
+ExitFor:
+			LogData("-->Checking type %s:\t%s\n", args[i].c_str(), sChkSts);
+			ExtOut("-->Checking type %s:\t%s\n", args[i].c_str(), sChkSts);
 		}
 Exit:
+		LogData("---%s\t%s\t%s\t%d\n", ModuleSrc, ModuleDesNoExt.c_str(), ftn, Status);
+
 		return Status;
 	}
 };
 
-
+template <class T>
+T find_i(T begin, T end, const char *s)
+{
+	for(T it=begin; it!=end; ++it)
+	{
+		if( _stricmp( it->c_str(), s)==0 )
+			return it;
+	}
+	return end;
+}
 
 HRESULT
 JSHE_SymTest(PDEBUG_CLIENT Client, PCSTR Args)
@@ -989,14 +1355,36 @@ JSHE_SymTest(PDEBUG_CLIENT Client, PCSTR Args)
 
     INIT_API();
 
+	// load checking module
+	std::vector<std::string> vModuleToChk;
+	FILE *fpModule =fopen("Module.cfg","r");
+	if(fpModule)
+	{
+		ExtOut("Load Module.cfg...\n");
+		char line[1000];
+		while( fgets(line, 1000, fpModule) )
+		{
+			std::string s(line);
+			trim(s);
+			if(!s.empty())
+			{
+				vModuleToChk.push_back(s);
+				ExtOut("%s\n", s.c_str());
+			}
+		}
+		fclose(fpModule);
+		fpModule =0;
+		ExtOut("\n");
+	}
+	
 	ULONG ModuleIndex =0; 
 	ULONG NLoadedModule =0;
 	ULONG NUnLoadedModule =0;
 	Status =g_ExtSymbols->GetNumberModules( &NLoadedModule, &NUnLoadedModule );
 	CHK_STS;
 
-	//ExtExec("x *!XXXXXXX");
-	//ExtExec(".logopen log_module.txt; lm; .logclose");
+	ExtExec("x *!XXXXXXX");
+	ExtExec(".logopen log_module.txt; lm; .logclose");
 
 	aModuleWithPdb.reserve(10);
 
@@ -1009,6 +1397,7 @@ JSHE_SymTest(PDEBUG_CLIENT Client, PCSTR Args)
 
 		ULONG aWhich[]={DEBUG_MODNAME_IMAGE, DEBUG_MODNAME_MODULE, DEBUG_MODNAME_LOADED_IMAGE, DEBUG_MODNAME_SYMBOL_FILE,DEBUG_MODNAME_MAPPED_IMAGE};
 		char *aWhichTitle[]={"DEBUG_MODNAME_IMAGE", "DEBUG_MODNAME_MODULE", "DEBUG_MODNAME_LOADED_IMAGE", "DEBUG_MODNAME_SYMBOL_FILE","DEBUG_MODNAME_MAPPED_IMAGE"};
+
 #define	N	(sizeof(aWhich) /sizeof(aWhich[0]))
 		int N2 =sizeof(aWhichTitle) /sizeof(aWhichTitle[0]);
 		_ASSERT(N==N2);
@@ -1035,7 +1424,23 @@ JSHE_SymTest(PDEBUG_CLIENT Client, PCSTR Args)
 			output.SetCol(aWhichTitle[i], ModuleName[i]);
 		output.puts();
 
-		if( ModuleParam.SymbolType==DEBUG_SYMTYPE_PDB )
+		BOOL bNeedChk =FALSE;
+		if(!vModuleToChk.empty())
+		{
+			if( find_i( vModuleToChk.begin(), vModuleToChk.end(), ModuleName[DEBUG_MODNAME_MODULE])
+				!=vModuleToChk.end() )
+			{
+				_ASSERT( ModuleParam.SymbolType==DEBUG_SYMTYPE_PDB);
+				bNeedChk =TRUE;
+			}
+		}
+		else
+		{
+			if( ModuleParam.SymbolType==DEBUG_SYMTYPE_PDB )
+				bNeedChk =TRUE;
+		}
+
+		if( bNeedChk)
 		{
 			ModuleInfo info;
 			info.name =ModuleName[DEBUG_MODNAME_MODULE];
@@ -1051,6 +1456,12 @@ JSHE_SymTest(PDEBUG_CLIENT Client, PCSTR Args)
 		}
 #endif
 	}
+	
+	ExtOut("Module List:\n");
+	for( ModuleIndex=0; ModuleIndex<aModuleWithPdb.size(); ModuleIndex++)
+	{
+		ExtOut("[%d] %s\n", ModuleIndex, aModuleWithPdb[ModuleIndex].name.c_str());
+	}
 
 	for( ModuleIndex=0; ModuleIndex<aModuleWithPdb.size(); ModuleIndex++)
 	{
@@ -1060,7 +1471,7 @@ JSHE_SymTest(PDEBUG_CLIENT Client, PCSTR Args)
 		MyPrecon precon;
 		precon.pModuleWithPdb =&aModuleWithPdb;
 
-		GetImportData(aModuleWithPdb[ModuleIndex].base,&precon,&callback );
+		GetImportData(aModuleWithPdb[ModuleIndex].base,&precon,&callback, &aModuleWithPdb );
 	}
 #if 0
 	ExtOut("\nLoaded modules:\n");
@@ -1084,8 +1495,94 @@ Exit:
     EXIT_API();
     return Status;
 }
+ 
+void parse_cmd_options(const std::string& cmd, std::vector<std::string> &args)
+{
+	int p =0;
+	int p1 =0;
+	int n =(int)cmd.length();
 
-#define MAX_STACK_FRAMES 20
+	int state =1;
+
+	for(; p1<n; p1++)
+	{
+		switch(state)
+		{
+		case 1:
+			if(cmd[p1]==' ')
+			{
+				if(p+1<p1)
+					args.push_back( cmd.substr(p, p1-p) );
+
+				while(p1<n && cmd[p1]==' ') p1++;
+				p=p1;
+				state =2;
+			}
+			break;
+		case 2:
+			if(cmd[p1]==' ')
+			{
+				if(p+1<p1)
+					args.push_back( cmd.substr(p, p1-p) );
+
+				while(p1<n && cmd[p1]==' ') p1++;
+				p=p1;
+				state =1;
+			}
+			else if(cmd[p1]=='\"')
+			{
+				state=3;
+			}
+			break;
+		case 3:
+			if(cmd[p1]=='\"')
+			{
+				state=2;
+			}
+			break;
+		}
+	}
+}
+
+HRESULT CALLBACK 
+JSHE_dt(PDEBUG_CLIENT Client, PCSTR args) {
+
+  INIT_API();
+  //std::vector<std::string> vargs;
+  //parse_cmd_options(args,  vargs);
+
+  ULONG64 Module;
+  ULONG   i, TypeId;
+  CHAR Name[MAX_PATH];
+
+  Status =g_ExtSymbols->GetSymbolTypeId(args, &TypeId, &Module);
+  CHK_STS;
+  ExtOut("Fields of %s\n", args);
+
+  for (i=0; ;i++) {
+	  HRESULT Hr;
+	  ULONG Offset=0;
+
+	  Hr = g_ExtSymbols->GetFieldName(Module, TypeId, i, Name, MAX_PATH, NULL);
+	  if (Hr == S_OK) {
+		  Status =g_ExtSymbols->GetFieldOffset(Module, TypeId, Name, &Offset);
+		  ExtOut("%lx (+%03lx) %s\n", i, Offset, Name);
+		  CHK_STS;
+	  } else if (Hr == E_INVALIDARG) {
+		  // All Fields done
+		  break;
+	  } else {
+		  ExtOut("GetFieldName Failed %lx\n", Hr);
+		  Status =Hr;
+		  CHK_STS;
+		  break;
+	  }
+  }
+Exit:
+  EXIT_API();
+  return Status;
+}
+
 
  HRESULT CALLBACK 
 JSHE_kb(PDEBUG_CLIENT Client, PCSTR args) {
@@ -1174,308 +1671,308 @@ Exit:
   EXIT_API();
   return Status;
 }
-        
- ULONG _ArrayIndex(ULONG TypeSize, char *pszTypeName)   
-{   
-    HRESULT         hr;   
-    ULONG64         Module = 0;   
-    ULONG           TypeId = 0;   
-    ULONG           ArrayIndex = 0;   
-    char            szWork[512];   
-    ULONG           lWork;   
-    //------------------------------------------------------------------------   
-    lWork = strlen(pszTypeName);   
-    if(3 > lWork)   
-        return 0;   
-    //------------------------------------------------------------------------   
-    if(('[' == pszTypeName[lWork - 2]) && (']' == pszTypeName[lWork - 1]))   
-    {   
-        strcpy(szWork, pszTypeName);   
-        szWork[lWork - 2] = '\0';   
-        hr = g_ExtSymbols->GetSymbolTypeId(szWork, &TypeId, &Module);   
-        if(S_OK != hr)   
-        {   
-            return 0xffffffff;   
-        }   
-        //--------------------------------------------------------------------   
-        hr = g_ExtSymbols->GetTypeSize(Module, TypeId, &lWork);   
-        if(S_OK != hr)   
-        {   
-            return 0xffffffff;   
-        }   
-        ArrayIndex = TypeSize / lWork;   
-    }   
-    //------------------------------------------------------------------------   
-    return ArrayIndex;   
-}   
-
- HRESULT _dumpStruct2(char *pszStrName, char *pszMemberName)   
-{   
-    HRESULT         hr;   
-    ULONG64         Module = 0;   
-    ULONG           TypeId = 0;   
-    char            szTypeName[512];   
-    ULONG           FieldTypeId;   
-    ULONG           Offset;   
-    ULONG           TypeSize;   
-    ULONG           TypeNameSize;   
-    ULONG           ArrayIndex;   
-    //------------------------------------------------------------------------   
-    hr = g_ExtSymbols->GetSymbolTypeId(pszStrName, &TypeId, &Module);   
-    if(S_OK != hr)   
-    {   
-        ExtOut("GetSymbolTypeId Failed 0x%08x\n", hr);   
-        return hr;   
-    }   
-    //------------------------------------------------------------------------   
-    hr = g_ExtSymbols->GetFieldTypeAndOffset(Module, TypeId, pszMemberName, &FieldTypeId, &Offset);   
-    if(S_OK != hr)   
-    {   
-        ExtOut("GetFieldTypeAndOffset Failed 0x%08x\n", hr);   
-        return hr;   
-    }   
-    //------------------------------------------------------------------------   
-    // TypeName   
-    hr = g_ExtSymbols->GetTypeName(Module, FieldTypeId, szTypeName, sizeof(szTypeName), &TypeNameSize);   
-    if(S_OK != hr)   
-    {   
-        ExtOut("GetTypeName Failed 0x%08x\n", hr);   
-        return hr;   
-    }   
-    //------------------------------------------------------------------------   
-    hr = g_ExtSymbols->GetTypeSize(Module, FieldTypeId, &TypeSize);   
-    if(S_OK != hr)   
-    {   
-        ExtOut("GetTypeSize Failed 0x%08x\n", hr);   
-        return hr;   
-    }   
-    //------------------------------------------------------------------------   
-    ArrayIndex = _ArrayIndex(TypeSize, szTypeName);   
-    if(0xffffffff == ArrayIndex)   
-    {   
-        hr = g_ExtControl->IsPointer64Bit();   
-        if(S_OK != hr)   
-            ArrayIndex = TypeSize / 4;   
-        else   
-            ArrayIndex = TypeSize / 8;   
-    }   
-    //------------------------------------------------------------------------   
-    // MDB偺 STRUCT_INFO 偺宍偱昞帵   
-    // 偨偩偟丄TypeName偼丄pAdditionalInfoName 偲摨偠傕偺傪   
-    // uTypeInfo 偼丄-1傪昞帵偡傞   
-    char * p = strchr(pszStrName, '!');   
-    char            szStruct[512];   
-    if(NULL == p)   
-        strcpy(szStruct, pszStrName);   
-    else   
-        strcpy(szStruct, ++p);   
-    ExtOut("\t%s\t%d\t%d\t%d\t%s\t%s\t%d\t%s\n",   
-            szStruct, Offset, TypeSize, ArrayIndex, szTypeName, pszMemberName, -1, szTypeName);   
-    return hr;   
-}   
-
-//如何测试传进来的是struct？
-HRESULT _dumpStruct(char *pszStrName)   
-{   
-    HRESULT         hr;   
-    ULONG64         Module = 0;   
-    ULONG           TypeId = 0;   
-    char            szMemberName[512];   
-    //------------------------------------------------------------------------   
-    hr = g_ExtSymbols->GetSymbolTypeId(pszStrName, &TypeId, &Module);   
-    if(S_OK != hr)   
-    {   
-        ExtOut("GetSymbolTypeId Failed 0x%08x\n", hr);   
-        return hr;   
-    }   
-    //------------------------------------------------------------------------   
-//    ExtOut("Index, +Offset, MemberName, MemberSize, ArrayIndex, TypeName\n");   
-    for(ULONG l = 0 ;; l++)   
-    {   
-        //--------------------------------------------------------------------   
-        hr = g_ExtSymbols->GetFieldName(Module, TypeId, l, szMemberName, sizeof(szMemberName), NULL);   
-        if(S_OK != hr)   
-        {   
-            if(E_INVALIDARG == hr)   
-            {   
-                if(0 == l)   
-                {   
-                    ExtOut("(%4d) not found\n", l);   
-                    hr = E_FAIL;   
-                }   
-                else   
-                    hr = S_OK;   
-                break;   
-            }   
-            else   
-            {   
-                ExtOut("(%4d) GetFieldName Failed 0x%08x\n", l, hr);   
-                return hr;   
-            }   
-        }   
-        //--------------------------------------------------------------------   
-        // 峔憿懱柤丄儊儞僶柤傛傝丄忣曬傪摼傞   
-        ExtOut("%5d,", l);   
-        hr = _dumpStruct2(pszStrName, szMemberName);   
-        if(S_OK != hr)   
-        {   
-            ExtOut("(%4d) GetFieldTypeAndOffset Failed 0x%08x\n", l, hr);   
-            return hr;   
-        }   
-    }   
-    return hr;   
-}   
-
- //很简陋
- //没有相关信息，而这是我想要的
- HRESULT _dumpFunction(ULONG64 Offset, char *pszFuncName)   
-{   
-    HRESULT         hr;   
-    ULONG64         Module = 0;   
-    ULONG           TypeId = 0;   
-//    BYTE            bBuff[256];   
-    char            szPDB[512];   
-//    ULONG           BufferNeed;   
-//    FPO_DATA *              pfpoData;   
-//    IMAGE_FUNCTION_ENTRY *  piFuncEntry;   
-    //------------------------------------------------------------------------   
-//    memset(bBuff, 0, sizeof(bBuff));   
-//    pfpoData    = (FPO_DATA *)bBuff;   
-//    piFuncEntry = (IMAGE_FUNCTION_ENTRY *)bBuff;   
-//    hr = g_ExtSymbols->GetFunctionEntryByOffset(Offset, DEBUG_GETFNENT_RAW_ENTRY_ONLY,   
-//                                              bBuff, sizeof(bBuff), &BufferNeed);   
+//        
+// ULONG _ArrayIndex(ULONG TypeSize, char *pszTypeName)   
+//{   
+//    HRESULT         hr;   
+//    ULONG64         Module = 0;   
+//    ULONG           TypeId = 0;   
+//    ULONG           ArrayIndex = 0;   
+//    char            szWork[512];   
+//    ULONG           lWork;   
+//    //------------------------------------------------------------------------   
+//    lWork = strlen(pszTypeName);   
+//    if(3 > lWork)   
+//        return 0;   
+//    //------------------------------------------------------------------------   
+//    if(('[' == pszTypeName[lWork - 2]) && (']' == pszTypeName[lWork - 1]))   
+//    {   
+//        strcpy(szWork, pszTypeName);   
+//        szWork[lWork - 2] = '\0';   
+//        hr = g_ExtSymbols->GetSymbolTypeId(szWork, &TypeId, &Module);   
+//        if(S_OK != hr)   
+//        {   
+//            return 0xffffffff;   
+//        }   
+//        //--------------------------------------------------------------------   
+//        hr = g_ExtSymbols->GetTypeSize(Module, TypeId, &lWork);   
+//        if(S_OK != hr)   
+//        {   
+//            return 0xffffffff;   
+//        }   
+//        ArrayIndex = TypeSize / lWork;   
+//    }   
+//    //------------------------------------------------------------------------   
+//    return ArrayIndex;   
+//}   
+//
+// HRESULT _dumpStruct2(char *pszStrName, char *pszMemberName)   
+//{   
+//    HRESULT         hr;   
+//    ULONG64         Module = 0;   
+//    ULONG           TypeId = 0;   
+//    char            szTypeName[512];   
+//    ULONG           FieldTypeId;   
+//    ULONG           Offset;   
+//    ULONG           TypeSize;   
+//    ULONG           TypeNameSize;   
+//    ULONG           ArrayIndex;   
+//    //------------------------------------------------------------------------   
+//    hr = g_ExtSymbols->GetSymbolTypeId(pszStrName, &TypeId, &Module);   
 //    if(S_OK != hr)   
 //    {   
+//        ExtOut("GetSymbolTypeId Failed 0x%08x\n", hr);   
 //        return hr;   
 //    }   
-    //------------------------------------------------------------------------   
-//    hr = g_ExtSymbols->GetSymbolTypeId(pszFuncName, &TypeId, &Module);   
-    hr = g_ExtSymbols->GetOffsetTypeId(Offset, &TypeId, &Module);   
-    if(S_OK != hr)   
-        return hr;   
-    hr = g_ExtSymbols->GetModuleNameString(DEBUG_MODNAME_SYMBOL_FILE,   
-                                         DEBUG_ANY_ID, Module,   
-                                         szPDB, sizeof(szPDB), NULL);   
-    if(S_OK != hr)   
-        return hr;   
-    //------------------------------------------------------------------------   
-    // DIA 傪巊梡偟偰丄娭悢僷儔儊乕僞傪摼傞   
-    // DIA 偱偼丄NT! 側偳偼晄梫偺偨傔丄嶍彍偡傞   
-    char * p = strchr(pszFuncName, '!');   
-    char            szFunc[512];   
-    if(NULL == p)   
-        strcpy(szFunc, pszFuncName);   
-    else   
-        strcpy(szFunc, ++p);   
-   
-    //------------------------------------------------------------------------   
-//#if 1   
-//    {   // 搒搙丄PDB傪儘乕僪偡傞偲抶偄偨傔   
-//        if(0 != strcmp(g_PDBFileSave, szPDB))   
-//        {   
-//            exitDia();   
-//            hr = initDia(szPDB);   
-//            strcpy(g_PDBFileSave, szPDB);   
-//        }   
-//        wchar_t szFName[512];   
-//        mbstowcs(szFName, szFunc, 512);   
-//        hr = dump(szFName);   
+//    //------------------------------------------------------------------------   
+//    hr = g_ExtSymbols->GetFieldTypeAndOffset(Module, TypeId, pszMemberName, &FieldTypeId, &Offset);   
+//    if(S_OK != hr)   
+//    {   
+//        ExtOut("GetFieldTypeAndOffset Failed 0x%08x\n", hr);   
+//        return hr;   
 //    }   
-//#else   
-//    hr = diaDumpEntry(szPDB, szFunc);   
-//#endif   
-    //------------------------------------------------------------------------   
-    return hr;   
-}   
-
- HRESULT _dumpSymbols(char * pszSymbolName)   
-{   
-    HRESULT         hr;   
-    ULONG64         handle;   
-    ULONG64         Offset;   
-    char            szSymbolName[512];   
-    //-------------------------------------------------------   
-    //lxc add start   
-    //ULONG  TypeId;   
-    //DEBUG_SYMBOL_ENTRY  info;   
-    //DEBUG_MODULE_AND_ID dbmodule;   
-    //lxc end   
-    //------------------------------------------------------------------------   
-    if(NULL == pszSymbolName)   
-        pszSymbolName = "nt!*";   
-    hr = g_ExtSymbols->StartSymbolMatch(pszSymbolName, &handle);   
-    if(S_OK != hr)   
-    {   
-        ExtOut("StartSymbolMatch Failed 0x%08x\n", hr);   
-        return hr;   
-    }   
-    //------------------------------------------------------------------------   
-    for(ULONG l = 0 ; ; l++)   
-    {   
-        hr = g_ExtSymbols->GetNextSymbolMatch(handle, szSymbolName, sizeof(szSymbolName), NULL, &Offset);   
-        if(S_OK != hr)   
-        {   
-            if(E_NOINTERFACE == hr)   
-                hr = S_OK;   
-            else   
-                ExtOut("(%4d) GetNextSymbolMatch Failed 0x%08x\n", l, hr);   
-            break;   
-        }   
-        else   
-        {   
-			//下面注释掉的这段不能工作
-			DEBUG_MODULE_AND_ID dbmodule;
-			ULONG TypeId;
-            //lxc start   
-            hr = g_ExtSymbols->GetOffsetTypeId(Offset, &TypeId , &(dbmodule.ModuleBase));   
-            if(S_OK != hr)   
-              return hr;  
-
-   //         dbmodule.Id = TypeId;   
-   //
-			//DEBUG_SYMBOL_ENTRY info;
-   //         hr = g_ExtSymbols->GetSymbolEntryInformation(&dbmodule,&info);   
-   //         if(S_OK != hr)   
-   //           continue;   
-   //         if(info.Tag != SymTagFunction)   
-   //           continue;   
-            //lxc end   
-            ExtOut("\n----\n(%4d) Offset=0x%I64X Symbol=%s\n", l, Offset, szSymbolName);   
-            hr = _dumpFunction(Offset, szSymbolName);   
-   
-            if(S_OK != hr)   
-                ExtOut("  failed 0x%08X\n", hr);   
-
-        }   
-    }   
-    //------------------------------------------------------------------------   
-    g_ExtSymbols->EndSymbolMatch(handle);   
-    return hr;   
-}   
-   
-//http://read.pudn.com/downloads64/sourcecode/windows/system/224256/maketypef/dumpstk.cpp__.htm
-HRESULT CALLBACK 
-JSHE_x(PDEBUG_CLIENT Client, PCSTR args) {
-
-  INIT_API();
-  //UNREFERENCED_PARAMETER(args);
-  
-  _dumpSymbols((char*)args);
-  //StringOutputRow output;
-
-  //ULONG64 Offset=0;
-  //Status =g_ExtSymbols->GetOffsetByName(args, &Offset);
-  //CHK_STS;
-
-  //FPO_DATA stFPOData;
-  //ULONG BufferNeeded =0;
-  //Status =g_ExtSymbols->GetFunctionEntryByOffset(Offset, 0, &stFPOData, sizeof(stFPOData), &BufferNeeded);
-  //CHK_STS;
-
-//Exit:
-  EXIT_API();
-  return Status;
-}
+//    //------------------------------------------------------------------------   
+//    // TypeName   
+//    hr = g_ExtSymbols->GetTypeName(Module, FieldTypeId, szTypeName, sizeof(szTypeName), &TypeNameSize);   
+//    if(S_OK != hr)   
+//    {   
+//        ExtOut("GetTypeName Failed 0x%08x\n", hr);   
+//        return hr;   
+//    }   
+//    //------------------------------------------------------------------------   
+//    hr = g_ExtSymbols->GetTypeSize(Module, FieldTypeId, &TypeSize);   
+//    if(S_OK != hr)   
+//    {   
+//        ExtOut("GetTypeSize Failed 0x%08x\n", hr);   
+//        return hr;   
+//    }   
+//    //------------------------------------------------------------------------   
+//    ArrayIndex = _ArrayIndex(TypeSize, szTypeName);   
+//    if(0xffffffff == ArrayIndex)   
+//    {   
+//        hr = g_ExtControl->IsPointer64Bit();   
+//        if(S_OK != hr)   
+//            ArrayIndex = TypeSize / 4;   
+//        else   
+//            ArrayIndex = TypeSize / 8;   
+//    }   
+//    //------------------------------------------------------------------------   
+//    // MDB偺 STRUCT_INFO 偺宍偱昞帵   
+//    // 偨偩偟丄TypeName偼丄pAdditionalInfoName 偲摨偠傕偺傪   
+//    // uTypeInfo 偼丄-1傪昞帵偡傞   
+//    char * p = strchr(pszStrName, '!');   
+//    char            szStruct[512];   
+//    if(NULL == p)   
+//        strcpy(szStruct, pszStrName);   
+//    else   
+//        strcpy(szStruct, ++p);   
+//    ExtOut("\t%s\t%d\t%d\t%d\t%s\t%s\t%d\t%s\n",   
+//            szStruct, Offset, TypeSize, ArrayIndex, szTypeName, pszMemberName, -1, szTypeName);   
+//    return hr;   
+//}   
+//
+////如何测试传进来的是struct？
+//HRESULT _dumpStruct(char *pszStrName)   
+//{   
+//    HRESULT         hr;   
+//    ULONG64         Module = 0;   
+//    ULONG           TypeId = 0;   
+//    char            szMemberName[512];   
+//    //------------------------------------------------------------------------   
+//    hr = g_ExtSymbols->GetSymbolTypeId(pszStrName, &TypeId, &Module);   
+//    if(S_OK != hr)   
+//    {   
+//        ExtOut("GetSymbolTypeId Failed 0x%08x\n", hr);   
+//        return hr;   
+//    }   
+//    //------------------------------------------------------------------------   
+////    ExtOut("Index, +Offset, MemberName, MemberSize, ArrayIndex, TypeName\n");   
+//    for(ULONG l = 0 ;; l++)   
+//    {   
+//        //--------------------------------------------------------------------   
+//        hr = g_ExtSymbols->GetFieldName(Module, TypeId, l, szMemberName, sizeof(szMemberName), NULL);   
+//        if(S_OK != hr)   
+//        {   
+//            if(E_INVALIDARG == hr)   
+//            {   
+//                if(0 == l)   
+//                {   
+//                    ExtOut("(%4d) not found\n", l);   
+//                    hr = E_FAIL;   
+//                }   
+//                else   
+//                    hr = S_OK;   
+//                break;   
+//            }   
+//            else   
+//            {   
+//                ExtOut("(%4d) GetFieldName Failed 0x%08x\n", l, hr);   
+//                return hr;   
+//            }   
+//        }   
+//        //--------------------------------------------------------------------   
+//        // 峔憿懱柤丄儊儞僶柤傛傝丄忣曬傪摼傞   
+//        ExtOut("%5d,", l);   
+//        hr = _dumpStruct2(pszStrName, szMemberName);   
+//        if(S_OK != hr)   
+//        {   
+//            ExtOut("(%4d) GetFieldTypeAndOffset Failed 0x%08x\n", l, hr);   
+//            return hr;   
+//        }   
+//    }   
+//    return hr;   
+//}   
+//
+// //很简陋
+// //没有相关信息，而这是我想要的
+// HRESULT _dumpFunction(ULONG64 Offset, char *pszFuncName)   
+//{   
+//    HRESULT         hr;   
+//    ULONG64         Module = 0;   
+//    ULONG           TypeId = 0;   
+////    BYTE            bBuff[256];   
+//    char            szPDB[512];   
+////    ULONG           BufferNeed;   
+////    FPO_DATA *              pfpoData;   
+////    IMAGE_FUNCTION_ENTRY *  piFuncEntry;   
+//    //------------------------------------------------------------------------   
+////    memset(bBuff, 0, sizeof(bBuff));   
+////    pfpoData    = (FPO_DATA *)bBuff;   
+////    piFuncEntry = (IMAGE_FUNCTION_ENTRY *)bBuff;   
+////    hr = g_ExtSymbols->GetFunctionEntryByOffset(Offset, DEBUG_GETFNENT_RAW_ENTRY_ONLY,   
+////                                              bBuff, sizeof(bBuff), &BufferNeed);   
+////    if(S_OK != hr)   
+////    {   
+////        return hr;   
+////    }   
+//    //------------------------------------------------------------------------   
+////    hr = g_ExtSymbols->GetSymbolTypeId(pszFuncName, &TypeId, &Module);   
+//    hr = g_ExtSymbols->GetOffsetTypeId(Offset, &TypeId, &Module);   
+//    if(S_OK != hr)   
+//        return hr;   
+//    hr = g_ExtSymbols->GetModuleNameString(DEBUG_MODNAME_SYMBOL_FILE,   
+//                                         DEBUG_ANY_ID, Module,   
+//                                         szPDB, sizeof(szPDB), NULL);   
+//    if(S_OK != hr)   
+//        return hr;   
+//    //------------------------------------------------------------------------   
+//    // DIA 傪巊梡偟偰丄娭悢僷儔儊乕僞傪摼傞   
+//    // DIA 偱偼丄NT! 側偳偼晄梫偺偨傔丄嶍彍偡傞   
+//    char * p = strchr(pszFuncName, '!');   
+//    char            szFunc[512];   
+//    if(NULL == p)   
+//        strcpy(szFunc, pszFuncName);   
+//    else   
+//        strcpy(szFunc, ++p);   
+//   
+//    //------------------------------------------------------------------------   
+////#if 1   
+////    {   // 搒搙丄PDB傪儘乕僪偡傞偲抶偄偨傔   
+////        if(0 != strcmp(g_PDBFileSave, szPDB))   
+////        {   
+////            exitDia();   
+////            hr = initDia(szPDB);   
+////            strcpy(g_PDBFileSave, szPDB);   
+////        }   
+////        wchar_t szFName[512];   
+////        mbstowcs(szFName, szFunc, 512);   
+////        hr = dump(szFName);   
+////    }   
+////#else   
+////    hr = diaDumpEntry(szPDB, szFunc);   
+////#endif   
+//    //------------------------------------------------------------------------   
+//    return hr;   
+//}   
+//
+// HRESULT _dumpSymbols(char * pszSymbolName)   
+//{   
+//    HRESULT         hr;   
+//    ULONG64         handle;   
+//    ULONG64         Offset;   
+//    char            szSymbolName[512];   
+//    //-------------------------------------------------------   
+//    //lxc add start   
+//    //ULONG  TypeId;   
+//    //DEBUG_SYMBOL_ENTRY  info;   
+//    //DEBUG_MODULE_AND_ID dbmodule;   
+//    //lxc end   
+//    //------------------------------------------------------------------------   
+//    if(NULL == pszSymbolName)   
+//        pszSymbolName = "nt!*";   
+//    hr = g_ExtSymbols->StartSymbolMatch(pszSymbolName, &handle);   
+//    if(S_OK != hr)   
+//    {   
+//        ExtOut("StartSymbolMatch Failed 0x%08x\n", hr);   
+//        return hr;   
+//    }   
+//    //------------------------------------------------------------------------   
+//    for(ULONG l = 0 ; ; l++)   
+//    {   
+//        hr = g_ExtSymbols->GetNextSymbolMatch(handle, szSymbolName, sizeof(szSymbolName), NULL, &Offset);   
+//        if(S_OK != hr)   
+//        {   
+//            if(E_NOINTERFACE == hr)   
+//                hr = S_OK;   
+//            else   
+//                ExtOut("(%4d) GetNextSymbolMatch Failed 0x%08x\n", l, hr);   
+//            break;   
+//        }   
+//        else   
+//        {   
+//			//下面注释掉的这段不能工作
+//			DEBUG_MODULE_AND_ID dbmodule;
+//			ULONG TypeId;
+//            //lxc start   
+//            hr = g_ExtSymbols->GetOffsetTypeId(Offset, &TypeId , &(dbmodule.ModuleBase));   
+//            if(S_OK != hr)   
+//              return hr;  
+//
+//   //         dbmodule.Id = TypeId;   
+//   //
+//			//DEBUG_SYMBOL_ENTRY info;
+//   //         hr = g_ExtSymbols->GetSymbolEntryInformation(&dbmodule,&info);   
+//   //         if(S_OK != hr)   
+//   //           continue;   
+//   //         if(info.Tag != SymTagFunction)   
+//   //           continue;   
+//            //lxc end   
+//            ExtOut("\n----\n(%4d) Offset=0x%I64X Symbol=%s\n", l, Offset, szSymbolName);   
+//            hr = _dumpFunction(Offset, szSymbolName);   
+//   
+//            if(S_OK != hr)   
+//                ExtOut("  failed 0x%08X\n", hr);   
+//
+//        }   
+//    }   
+//    //------------------------------------------------------------------------   
+//    g_ExtSymbols->EndSymbolMatch(handle);   
+//    return hr;   
+//}   
+//   
+////http://read.pudn.com/downloads64/sourcecode/windows/system/224256/maketypef/dumpstk.cpp__.htm
+//HRESULT CALLBACK 
+//JSHE_x(PDEBUG_CLIENT Client, PCSTR args) {
+//
+//  INIT_API();
+//  //UNREFERENCED_PARAMETER(args);
+//  
+//  _dumpSymbols((char*)args);
+//  //StringOutputRow output;
+//
+//  //ULONG64 Offset=0;
+//  //Status =g_ExtSymbols->GetOffsetByName(args, &Offset);
+//  //CHK_STS;
+//
+//  //FPO_DATA stFPOData;
+//  //ULONG BufferNeeded =0;
+//  //Status =g_ExtSymbols->GetFunctionEntryByOffset(Offset, 0, &stFPOData, sizeof(stFPOData), &BufferNeeded);
+//  //CHK_STS;
+//
+////Exit:
+//  EXIT_API();
+//  return Status;
+//}
 
 //
 //HRESULT CALLBACK 

@@ -137,8 +137,9 @@ ExtErr(PCSTR Format, ...)
 void
 ExtExec(PCSTR Command)
 {
-    //g_ExtControl->Execute(DEBUG_OUTCTL_ALL_CLIENTS, Command,DEBUG_EXECUTE_DEFAULT);
-	g_ExtControl->Execute(DEBUG_OUTCTL_LOG_ONLY, Command,DEBUG_EXECUTE_DEFAULT);
+	ExtOut("Exec: %s\n", Command);
+    g_ExtControl->Execute(DEBUG_OUTCTL_ALL_CLIENTS, Command,DEBUG_EXECUTE_DEFAULT);
+	//g_ExtControl->Execute(DEBUG_OUTCTL_LOG_ONLY, Command,DEBUG_EXECUTE_DEFAULT);
 }
 
 extern "C"

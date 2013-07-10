@@ -12,6 +12,10 @@ F:\Program Files\Debugging Tools for Windows (x86)\sdk\samples\adp_ext_msvc\adp_
 使用方法：
 .load F:\Program Files\Debugging Tools for Windows (x86)\sdk\samples\adp_ext_msvc\Debug\adp_ext_msvc.dll
 !JSHE_SymTest
+会在当前目录下生成一个文件SimpleLog.txt，里面会记录下检查过的所有function和struct，以及检查结果
+
+配置文件：
+module.cfg: 可选，如果定义该文件，扩展会只检查该文件里面定义的module；否则，会检查所有有pdb的module
 
 该扩展原理：
 对于每一个有pdb的module Ａ：
