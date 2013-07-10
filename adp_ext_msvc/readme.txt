@@ -4,8 +4,12 @@
 F:\Program Files\Debugging Tools for Windows (x86)\sdk\samples\adp_ext_msvc\adp_ext_msvc.sln
 
 **************************************
-使用
+功能：
+根据输入输出函数表，确定模块依赖关系
+解析函数参数类型，比对参数结构定义在不同模块是否相同
 
+
+使用方法：
 .load F:\Program Files\Debugging Tools for Windows (x86)\sdk\samples\adp_ext_msvc\Debug\adp_ext_msvc.dll
 !JSHE_SymTest
 
@@ -31,16 +35,7 @@ F:\Program Files\Debugging Tools for Windows (x86)\sdk\samples\adp_ext_msvc\adp_
 俺偷懒，直接调用dt -r ??? 0输出到file，然后比较文件
 
 **************************************
-todo：
-
-A）实现2.2）
-B）2.1）对参数有template时存在bug，比如这个
-Chk VisionProc    GeneralUI    public: static class boost::shared_ptr<class CBaseUIString> __cdecl
-CBaseUIString::CreateString(class std::basic_string<char,struct std::char_traits<char>,class std::allocator<char> >
-const &)
--->name CBaseUIString::CreateString
--->args
-     class std::basic_string<char --> std::basic_string<char
-     struct std::char_traits<char> --> std::char_traits<char>
-     class std::allocator<char> > const & -->
-C) 3)里面有bug
+已知问题：
+- 2.1）对函数定义有template时存在bug
+- 不能处理匿名导出函数 （但是可以处理匿名导入函数，只要该函数在导出的dll里面是具名导出）
+- 不能处理函数参数类型，或者参数个数的改变
