@@ -5,6 +5,7 @@
 #include "windows.h"
 #include <tlhelp32.h>
 #include <assert.h>
+#include <conio.h>
 
 #define	MY_CHK_STS			if(Sts) {assert(0); goto Exit;}
 #define	MY_CHK_ASSERT(x)	{BOOL bIsOk=(x); if(!bIsOk){Sts =-1; assert(! #x ); goto Exit;}}
@@ -62,13 +63,19 @@ int suspendOrResumtPID(DWORD processId, BOOL isSuspend)
 
     MY_CHK_ASSERT(Thread32First(hThreadSnapshot, &threadEntry));
 
+	DWORD isFindPID=0;
+
     do
     {
         if (threadEntry.th32OwnerProcessID == processId)
         {
-            HANDLE hThread = OpenThread(THREAD_ALL_ACCESS, FALSE,
+            HANDLE hThread = OpenThread(THREAD_SUSPEND_RESUME, FALSE,
                 threadEntry.th32ThreadID);
-			MY_CHK_ASSERT(hThread!=0);
+			
+			isFindPID++;
+
+			if(!hThread)
+				printf("Cannot open PID %d thread id %d\n", processId, threadEntry.th32ThreadID);
 
 			if(isSuspend)
 			{
@@ -86,6 +93,7 @@ int suspendOrResumtPID(DWORD processId, BOOL isSuspend)
         }
     } while (Thread32Next(hThreadSnapshot, &threadEntry));
 
+	MY_CHK_ASSERT(isFindPID>0);
 Exit:
     CloseHandle(hThreadSnapshot);
 	
@@ -134,7 +142,7 @@ int _tmain(int argc, _TCHAR* argv[])
 			if(pid)
 				break;
 
-			if(getchar())
+			if(_kbhit())
 				break;
 
 			Sleep(10);
